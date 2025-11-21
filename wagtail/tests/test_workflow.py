@@ -318,6 +318,143 @@ class TestPageWorkflows(WagtailTestUtils, TestCase):
         task_state = workflow_state.current_task_state
         self.assertNotEqual(task_state.task, task_1)
         self.assertEqual(workflow_state.status, workflow_state.STATUS_APPROVED)
+    
+        @override_settings(WAGTAIL_WORKFLOW_REQUIRE_REAPPROVAL_ON_EDIT=True)
+    def test_workflow_does_not_reset_when_saving_without_changes(self):
+        """
+        Test that workflow does not reset when saving draft without changes.
+        """
+        print("\n Testing workflow with save draft (no changes)")
+        
+        # Setup workflow com 2 tasks
+        data = self.start_workflow()
+        workflow_state = data["workflow_state"]
+        task_1 = data["task_1"]
+        task_2 = data["task_2"]
+        object = data["object"]
+        
+        # Aprova task 1
+        task_state = workflow_state.current_task_state
+        task_state.task.on_action(task_state, user=None, action_name="approve")
+        
+        # Agora está no task 2
+        self.assertEqual(workflow_state.current_task_state.task, task_2)
+        print(f"Approved task 1, now at task 2")
+        
+        # Salva revisão SEM mudanças (simula "Save draft")
+        current_revision = object.get_latest_revision()
+        object.save_revision()
+        
+        # Verifica se criou nova revisão (comportamento atual)
+        new_revision = object.get_latest_revision()
+        if current_revision.id != new_revision.id:
+            print(f"New revision created even without changes!")
+        
+        workflow_state.refresh_from_db()
+        
+        # Aprova task 2
+        task_state = workflow_state.current_task_state
+        task_state.task.on_action(task_state, user=None, action_name="approve")
+        
+        workflow_state.refresh_from_db()
+        task_state = workflow_state.current_task_state
+        print(f" Current task: {task_state.task}")
+        print(f" Workflow status: {workflow_state.status}")
+        
+        self.assertNotEqual(task_state.task, task_1, 
+                            "Workflow should not reset to task 1 when no changes were made")
+        self.assertEqual(workflow_state.status, workflow_state.STATUS_APPROVED,
+                        "Workflow should be approved, not reset")
+
+    def test_workflow_resets_when_content_changes(self):
+        """
+            Workflow DEVE resetar quando há mudanças reais no conteúdo.
+            Garante que a correção do Ciclo 1 não quebrou o comportamento esperado.
+        """
+        print("\n Testing new revision creation with content changes")
+        
+        data = self.start_workflow()
+        object = data["object"]
+        
+        # Salva primeira revisão
+        revision_1 = object.save_revision()
+        print(f"First revision ID: {revision_1.id}")
+        
+        # Modifica conteúdo
+        object.title = "Título Modificado"
+        revision_2 = object.save_revision()
+        
+        print(f"Second revision ID: {revision_2.id}")
+        
+        # Nova revisão DEVE ter sido criada
+        self.assertNotEqual(revision_1.id, revision_2.id,
+                        "New revision should be created when content changes")
+        print(f" New revision created successfully")
+
+    def test_multiple_consecutive_saves_without_changes(self):
+        """
+        Múltiplas salvadas consecutivas sem mudanças 
+        devem reutilizar a mesma revisão, evitando duplicatas no banco.
+        """
+        print("\n Testing multiple consecutive saves without changes")
+        
+        # Setup
+        data = self.start_workflow()
+        object = data["object"]
+        
+        # Primeira salvada - cria revisão inicial
+        revision_1 = object.save_revision()
+        print(f"   First save - Revision ID: {revision_1.id}")
+        
+        # Salvar 4 vezes consecutivas SEM fazer nenhuma mudança
+        revision_2 = object.save_revision()
+        revision_3 = object.save_revision()
+        revision_4 = object.save_revision()
+        revision_5 = object.save_revision()
+        
+        print(f"   Second save - Revision ID: {revision_2.id}")
+        print(f"   Third save - Revision ID: {revision_3.id}")
+        print(f"   Fourth save - Revision ID: {revision_4.id}")
+        print(f"   Fifth save - Revision ID: {revision_5.id}")
+        
+        # Todas as 5 chamadas devem retornar a MESMA revisão
+        self.assertEqual(revision_1.id, revision_2.id,
+                        "Second save should reuse first revision")
+        self.assertEqual(revision_1.id, revision_3.id,
+                        "Third save should reuse first revision")
+        self.assertEqual(revision_1.id, revision_4.id,
+                        "Fourth save should reuse first revision")
+        self.assertEqual(revision_1.id, revision_5.id,
+                        "Fifth save should reuse first revision")
+        
+        print(f"All saves reused same revision (ID: {revision_1.id})")
+
+
+    def test_detects_changes_in_slug_field(self):
+        """
+        istema deve detectar mudanças em qualquer campo de conteúdo,
+        não apenas no título. 
+        """
+        print("\n Testing change detection in slug field")
+        
+        data = self.start_workflow()
+        object = data["object"]
+        
+        # Primeira revisão
+        revision_1 = object.save_revision()
+        original_slug = object.slug
+        print(f"   First revision ID: {revision_1.id}, slug: {original_slug}")
+        
+        # Mudar APENAS o slug (não o título)
+        object.slug = "novo-slug-modificado"
+        revision_2 = object.save_revision()
+        
+        print(f"   Second revision ID: {revision_2.id}, slug: {object.slug}")
+        
+        # Deve criar nova revisão quando slug muda
+        self.assertNotEqual(revision_1.id, revision_2.id,
+                        "New revision should be created when slug changes")
+        print(f"   Change in slug was detected correctly")
 
     def test_reject_workflow(self):
         # test that TaskState is marked as rejected upon Task.on_action with action=reject

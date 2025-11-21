@@ -954,6 +954,29 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
 
         if clean:
             self.full_clean()
+        
+                    
+        latest_revision = self.get_latest_revision()
+
+        if latest_revision:
+            current_content = self.serializable_data()
+            latest_content = latest_revision.content
+            
+            metadata_fields = {
+                'latest_revision', 'latest_revision_created_at', 
+                'has_unpublished_changes', 'draft_title',
+                'first_published_at', 'last_published_at',
+            }
+            
+            current_filtered = {k: v for k, v in current_content.items() if k not in metadata_fields}
+            latest_filtered = {k: v for k, v in latest_content.items() if k not in metadata_fields}
+            
+            if current_filtered == latest_filtered:
+                print(f"  Reusing revision (no changes)")
+                return latest_revision
+            else:
+                print(f" Creating NEW revision (content changed)")
+
 
         new_comments = getattr(self, COMMENTS_RELATION_NAME).filter(pk__isnull=True)
         for comment in new_comments:
